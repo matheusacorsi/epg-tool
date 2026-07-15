@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+build/
+dist/
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# Claude Code local tool settings (machine-specific, not project code)
+.claude/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Copyrighted reference material -- don't redistribute via git/GitHub.
+papers/
+
+# Raw lab recordings: grows without bound as more insects are added, and
+# shouldn't live in git history. Keep it local; the Streamlit app takes
+# recordings via upload, and `epg-tool train` just points at a local path.
+Arquivo Ondas EPG Diaphorina citri/
+data/
