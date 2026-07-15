@@ -24,6 +24,18 @@ sentinel_codes: [99]
 preprocessing:
   trim_start_s: 600
 
+# D is both rare (~4.5% of windows) and easily confused with the far
+# more common E2 in the XGBoost feature space; plain "balanced"
+# (inverse-frequency) sample weighting under-corrects for that specific
+# combination. Tuned on the 20-insect calibration/validation split (see
+# experiment_d_boost in project history): D's held-out F1 rose from
+# 0.168 (no weighting) to 0.203 (balanced only) to 0.234 (balanced x3
+# for D) with overall accuracy only dropping ~1.6 points (0.838->0.822).
+# Re-tune if the training set changes meaningfully.
+training:
+  class_weight_multipliers:
+    D: 3.0
+
 waveforms:
   - code: 1
     label: Np

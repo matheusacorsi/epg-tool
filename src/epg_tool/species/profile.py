@@ -35,6 +35,12 @@ class SpeciesProfile:
     model_registry: dict = field(default_factory=dict)
     parameters: dict = field(default_factory=dict)
     trim_start_s: float = 0.0
+    # Extra per-label multiplier on top of inverse-frequency ("balanced")
+    # sample weights during training -- for waveforms that are both rare
+    # and easily confused with a much more common one (plain balanced
+    # weighting alone under-corrects for that combination). Tuned per
+    # species/dataset, not a fixed constant.
+    class_weight_multipliers: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         codes = [w.code for w in self.waveforms]
@@ -80,6 +86,7 @@ class SpeciesProfile:
             model_registry=raw.get("model_registry", {}),
             parameters=raw.get("parameters", {}),
             trim_start_s=raw.get("preprocessing", {}).get("trim_start_s", 0.0),
+            class_weight_multipliers=raw.get("training", {}).get("class_weight_multipliers", {}),
         )
 
 

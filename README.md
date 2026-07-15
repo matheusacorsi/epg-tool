@@ -152,17 +152,38 @@ request/response UI.
 
 ## Known limitations / next steps
 
-- **`D` waveform is hard to detect.** Across 20 *D. citri* insects (16
-  calibration / 4 held-out validation, 80/20 split by individual),
-  XGBoost reaches ~84% held-out accuracy and Random Forest ~81%, but
-  both struggle specifically with `D` (recall ~15-23%), which the model
-  frequently confuses with the much more common `E2` — visible directly
-  in the Streamlit app's per-insect confusion matrix and pie charts. `D`
-  is short-duration (mean ~46s per Bonani et al.) and rare relative to
-  `E2`, so this reads as a genuine class-imbalance/signal-similarity
-  challenge rather than a bug. Worth trying next: oversampling/class
-  weighting specifically for `D`, finer window sizes around C→D→E1
-  transitions, or `D`-specific engineered features.
+- **Development is focused on XGBoost going forward.** It's outperformed
+  Random Forest on every held-out comparison so far (~82-84% vs ~81%
+  accuracy). RF's code/model stay in place and usable, but new tuning
+  work targets XGBoost specifically.
+- **`D` waveform is hard to detect, and this has been actively tuned,
+  not just documented.** `D` is short-duration (mean ~46s per Bonani
+  et al.), rare (~4.5% of windows), and easily confused with the far
+  more common `E2` in the current feature space. Reviewing the DiscoEPG
+  paper (Dinh et al. 2026, `papers/main.pdf` -- a Python package for
+  automatic aphid EPG annotation) surfaced one directly-applicable fix:
+  they hit the same problem with their own rare/short waveform (`pd`,
+  potential drops) and corrected for it with oversampling. The species
+  profile now supports `training.class_weight_multipliers`
+  (`diaphorina_citri.yaml`), an extra per-label weight on top of
+  balanced (inverse-frequency) sample weights, applied automatically
+  by `epg-tool train --model xgboost`. Tuned on the 20-insect
+  calibration/validation split: `D`'s held-out F1 went
+  0.168 (no weighting) → 0.203 (balanced only) → **0.234** (balanced,
+  D×3) -- a ~39% relative improvement, mostly via recall (0.111 → 0.251),
+  at a precision cost and ~1.6 points of overall accuracy (0.838 →
+  0.822). Two things DiscoEPG's own paper does that this project
+  doesn't yet, worth trying next if `D` still isn't good enough:
+  per-recording amplitude normalization (their pipeline min-max
+  normalizes each recording to [0,1] before feature extraction, which
+  may help cross-insect generalization more than it helped `D`
+  specifically) and further hyperparameter search around their reported
+  XGBoost config (100 trees, learning_rate=0.3, depth=6, vs. this
+  project's 300/0.1/6). Explicitly *not* worth pursuing further, already
+  tested and ruled out: shorter windows (tried 0.5s vs. the default 1.0s
+  -- no improvement, since `D`'s ~46s-90s typical duration is already
+  much longer than either window size, unlike DiscoEPG's own 10.24s
+  windows where fixed-endpoint dilution is a bigger factor).
 - **Per-insect variability is real and large.** Individual held-out
   insects can score well below the aggregate validation accuracy (the
   paper itself notes highly variable probing behavior between

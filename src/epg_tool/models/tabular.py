@@ -19,11 +19,22 @@ class TabularModel:
     estimator: Any
     feature_names: list[str] = field(default_factory=list)
     label_encoder: LabelEncoder = field(default_factory=LabelEncoder)
+    # "balanced" auto-computes per-sample weights (inverse class frequency)
+    # at fit time when the caller doesn't supply explicit sample_weight --
+    # XGBoost's sklearn wrapper has no built-in class_weight like RF's, so
+    # this is how it gets the same rare-class boost (see DiscoEPG's
+    # analogous oversampling fix for their rare/short "pd" waveform).
+    class_weight: str | None = None
 
-    def fit(self, X: pd.DataFrame, y: np.ndarray) -> "TabularModel":
+    def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "TabularModel":
         self.feature_names = list(X.columns)
         y_enc = self.label_encoder.fit_transform(y)
-        self.estimator.fit(X[self.feature_names], y_enc)
+        if sample_weight is None and self.class_weight == "balanced":
+            from sklearn.utils.class_weight import compute_sample_weight
+
+            sample_weight = compute_sample_weight("balanced", y_enc)
+        fit_kwargs = {} if sample_weight is None else {"sample_weight": sample_weight}
+        self.estimator.fit(X[self.feature_names], y_enc, **fit_kwargs)
         return self
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
@@ -87,7 +98,7 @@ def random_forest_model(**kwargs) -> TabularModel:
     return TabularModel(estimator=RandomForestClassifier(**params))
 
 
-def xgboost_model(**kwargs) -> TabularModel:
+def xgboost_model(class_weight: str | None = "balanced", **kwargs) -> TabularModel:
     from xgboost import XGBClassifier
 
     params = dict(
@@ -99,4 +110,4 @@ def xgboost_model(**kwargs) -> TabularModel:
         eval_metric="mlogloss",
     )
     params.update(kwargs)
-    return TabularModel(estimator=XGBClassifier(**params))
+    return TabularModel(estimator=XGBClassifier(**params), class_weight=class_weight)

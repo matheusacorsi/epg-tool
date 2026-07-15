@@ -11,6 +11,7 @@ from epg_tool.training.dataset import (
     RecordingRef,
     build_dataset,
     build_features_for_session,
+    compute_class_sample_weights,
     discover_recordings,
     group_train_val_test_split,
 )
@@ -75,6 +76,48 @@ def test_build_features_explicit_trim_overrides_profile_default():
     session = _toy_session_10s()
     X, y = build_features_for_session(session, profile, window_s=1.0, trim_start_s=0.0)
     assert set(y) == {1, 2}
+
+
+def _profile_with_weight_multipliers(multipliers: dict) -> SpeciesProfile:
+    return SpeciesProfile(
+        name="weight_test",
+        common_name="weight_test",
+        reference="",
+        waveforms=[WaveformDef(code=1, label="Np"), WaveformDef(code=3, label="D"), WaveformDef(code=5, label="E2")],
+        sentinel_codes=frozenset({99}),
+        class_weight_multipliers=multipliers,
+    )
+
+
+def test_compute_class_sample_weights_balanced_without_multipliers():
+    profile = _profile_with_weight_multipliers({})
+    y = np.array([1, 1, 1, 1, 5, 5, 5, 5, 3, 3])  # Np x4, E2 x4, D x2
+    weights = compute_class_sample_weights(y, profile)
+    # balanced: rarer classes get higher weight, but D isn't boosted beyond that
+    np_weight = weights[y == 1][0]
+    d_weight = weights[y == 3][0]
+    e2_weight = weights[y == 5][0]
+    assert np_weight == pytest.approx(e2_weight)
+    assert d_weight > np_weight  # D is rarer (2 vs 4) -> balanced already upweights it some
+
+
+def test_compute_class_sample_weights_applies_extra_multiplier():
+    y = np.array([1, 1, 1, 1, 5, 5, 5, 5, 3, 3])
+    unboosted = compute_class_sample_weights(y, _profile_with_weight_multipliers({}))
+    boosted = compute_class_sample_weights(y, _profile_with_weight_multipliers({"D": 3.0}))
+
+    # D's weight is exactly 3x what plain balanced gives it...
+    np.testing.assert_allclose(boosted[y == 3], unboosted[y == 3] * 3.0)
+    # ...while every other class is untouched.
+    np.testing.assert_allclose(boosted[y == 1], unboosted[y == 1])
+    np.testing.assert_allclose(boosted[y == 5], unboosted[y == 5])
+
+
+def test_compute_class_sample_weights_ignores_unknown_label():
+    y = np.array([1, 1, 3, 3])
+    profile = _profile_with_weight_multipliers({"NotARealLabel": 5.0})
+    weights = compute_class_sample_weights(y, profile)
+    assert len(weights) == 4  # doesn't raise, just skips the unmatched label
 
 
 def test_discover_recordings_finds_both(two_recordings):

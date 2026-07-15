@@ -118,6 +118,23 @@ def build_dataset(
     return X, y, groups
 
 
+def compute_class_sample_weights(y: np.ndarray, profile: SpeciesProfile) -> np.ndarray:
+    """Inverse-class-frequency ("balanced") sample weights, with an extra
+    per-label multiplier from the species profile's
+    ``training.class_weight_multipliers`` layered on top -- for labels
+    that are both rare and easily confused with a much more common one,
+    where plain balanced weighting alone under-corrects (see
+    ``diaphorina_citri.yaml`` for the D-vs-E2 case this was tuned for)."""
+    from sklearn.utils.class_weight import compute_sample_weight
+
+    weights = compute_sample_weight("balanced", y)
+    for label, multiplier in profile.class_weight_multipliers.items():
+        code = profile.label_to_code.get(label)
+        if code is not None:
+            weights = weights * np.where(y == code, multiplier, 1.0)
+    return weights
+
+
 Split = tuple[pd.DataFrame, np.ndarray, np.ndarray]
 
 

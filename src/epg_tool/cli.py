@@ -97,7 +97,12 @@ def train(
     held-out validation), train a tabular model, and report validation
     metrics."""
     from epg_tool.models.registry import model_path_for, save_model
-    from epg_tool.training.dataset import build_dataset, discover_recordings, group_train_val_test_split
+    from epg_tool.training.dataset import (
+        build_dataset,
+        compute_class_sample_weights,
+        discover_recordings,
+        group_train_val_test_split,
+    )
     from epg_tool.training.evaluate import evaluate
 
     profile = _load_species(species)
@@ -121,7 +126,13 @@ def train(
     )
 
     clf = _build_model(model)
-    clf.fit(*split.train[:2])
+    train_X, train_y = split.train[0], split.train[1]
+    # XGBoost has no built-in class_weight like RF -- compute balanced
+    # (+ any species-specific extra multiplier, e.g. for D vs E2) sample
+    # weights explicitly. RF is left alone; its own class_weight="balanced"
+    # already handles this at the estimator level.
+    sample_weight = compute_class_sample_weights(train_y, profile) if model == "xgboost" else None
+    clf.fit(train_X, train_y, sample_weight=sample_weight)
 
     val_X, val_y, _ = split.val
     if len(val_X) > 0:

@@ -18,6 +18,70 @@ def _separable_dataset(n_per_class: int = 30, seed: int = 0):
     return pd.DataFrame(X, columns=["f1", "f2"]), y
 
 
+def _imbalanced_overlapping_dataset(seed: int = 0):
+    """A majority class, a rare minority class that overlaps heavily with
+    it, and a well-separated third class -- mirrors the real D-vs-E2
+    situation (D is rare and gets swamped by the far more common E2
+    unless something corrects for the imbalance)."""
+    rng = np.random.default_rng(seed)
+    majority = rng.normal(loc=0.0, scale=1.0, size=(500, 2))
+    minority = rng.normal(loc=0.6, scale=1.0, size=(20, 2))
+    other = rng.normal(loc=6.0, scale=0.3, size=(100, 2))
+    X = np.vstack([majority, minority, other])
+    y = np.array([5] * 500 + [3] * 20 + [1] * 100)
+    return pd.DataFrame(X, columns=["f1", "f2"]), y
+
+
+class _RecordingEstimator:
+    """Fake estimator that just records what fit() received, to test
+    TabularModel's sample_weight/class_weight plumbing in isolation from
+    any real ML behavior."""
+
+    def __init__(self):
+        self.received_sample_weight = None
+
+    def fit(self, X, y, sample_weight=None):
+        self.received_sample_weight = sample_weight
+        self.classes_ = np.unique(y)
+
+    def predict(self, X):
+        return np.zeros(len(X), dtype=int)
+
+
+def test_no_class_weight_means_no_sample_weight_passed():
+    X, y = _separable_dataset()
+    est = _RecordingEstimator()
+    TabularModel(estimator=est, class_weight=None).fit(X, y)
+    assert est.received_sample_weight is None
+
+
+def test_balanced_class_weight_computes_sample_weight_when_none_given():
+    X, y = _separable_dataset()  # balanced 30/30 -> all weights should come out equal
+    est = _RecordingEstimator()
+    TabularModel(estimator=est, class_weight="balanced").fit(X, y)
+    assert est.received_sample_weight is not None
+    assert np.allclose(est.received_sample_weight, est.received_sample_weight[0])
+
+
+def test_explicit_sample_weight_overrides_balanced_default():
+    X, y = _separable_dataset()
+    est = _RecordingEstimator()
+    custom_weights = np.arange(len(y), dtype=float)
+    TabularModel(estimator=est, class_weight="balanced").fit(X, y, sample_weight=custom_weights)
+    np.testing.assert_array_equal(est.received_sample_weight, custom_weights)
+
+
+def test_xgboost_balanced_class_weight_improves_minority_recall():
+    X, y = _imbalanced_overlapping_dataset()
+    unweighted = xgboost_model(class_weight=None, n_estimators=50).fit(X, y)
+    balanced = xgboost_model(class_weight="balanced", n_estimators=50).fit(X, y)
+
+    minority_mask = y == 3
+    unweighted_recall = (unweighted.predict(X)[minority_mask] == 3).mean()
+    balanced_recall = (balanced.predict(X)[minority_mask] == 3).mean()
+    assert balanced_recall >= unweighted_recall
+
+
 @pytest.mark.parametrize("factory", [random_forest_model, xgboost_model])
 def test_tabular_model_fits_and_predicts_correct_codes(factory):
     X, y = _separable_dataset()
