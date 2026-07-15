@@ -15,6 +15,10 @@ venv/
 # Claude Code local tool settings (machine-specific, not project code)
 .claude/
 
+# Local bundle folder for manual GitHub-web-upload deployment (a mirror
+# of this same repo's tracked files, not something to version here too)
+/streamlit/
+
 # Streamlit
 .streamlit/secrets.toml
 
