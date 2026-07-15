@@ -18,6 +18,12 @@ reference: "Bonani et al. 2010, Entomologia Experimentalis et Applicata 134:35-4
 
 sentinel_codes: [99]
 
+# The first ~10 min of acquisition on this rig is consistently noisy
+# (settling artifact) and is excluded from training/evaluation/display
+# by default; always falls within D01 given the 100 Hz sampling rate.
+preprocessing:
+  trim_start_s: 600
+
 waveforms:
   - code: 1
     label: Np

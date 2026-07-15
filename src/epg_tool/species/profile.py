@@ -34,6 +34,7 @@ class SpeciesProfile:
     rule_based_thresholds: dict = field(default_factory=dict)
     model_registry: dict = field(default_factory=dict)
     parameters: dict = field(default_factory=dict)
+    trim_start_s: float = 0.0
 
     def __post_init__(self) -> None:
         codes = [w.code for w in self.waveforms]
@@ -78,6 +79,7 @@ class SpeciesProfile:
             rule_based_thresholds=raw.get("rule_based_thresholds", {}),
             model_registry=raw.get("model_registry", {}),
             parameters=raw.get("parameters", {}),
+            trim_start_s=raw.get("preprocessing", {}).get("trim_start_s", 0.0),
         )
 
 

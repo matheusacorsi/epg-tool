@@ -63,6 +63,18 @@ legend (often an accompanying analysis worksheet) before writing a new
 profile, the way `diaphorina_citri.yaml`'s header documents how codes
 1/2/3/4/5/7 were resolved to Np/C/D/E1/E2/G for this dataset.
 
+## Feature extraction
+
+Registered extractors (`src/epg_tool/features/`): `amplitude`,
+`spectral` (FFT dominant frequency/centroid/band energies/flatness/
+entropy), `wavelet`, `slope`, `baseline` (voltage-level shift from the
+session's own Np reference), `shape` (skewness/kurtosis/percentile
+spread), and `peaks` (rate/prominence/width/spacing of discrete peaks —
+targets the "waves vs peaks" distinction Bonani et al. describe for E2
+and G). Add a new one by writing a function decorated with
+`@register_feature("name")` returning a flat `dict[str, float]` —
+nothing else needs to change, it's picked up automatically.
+
 ## CLI
 
 ```bash
@@ -83,9 +95,18 @@ one folder" and the Stylet+ convention of annotations living in a
 individual, never randomly by window — adjacent windows of the same
 probe are highly correlated, so a random split would leak. This needs
 **at least 3 labeled insects** to guarantee no leakage in every split;
-with fewer (today: 1), it falls back to a chronological split and warns
-loudly. Treat those numbers as a pipeline sanity check, not a real
-generalization estimate, until more insects are added.
+with fewer, it falls back to a chronological split and warns loudly.
+`train`'s default (`--test-size 0.2 --val-size 0.0`) is a plain 80%
+calibration / 20% held-out validation split by insect; pass `--val-size`
+if you also want a separate tuning split on top of that.
+
+**Trimming a noisy warm-up period:** a species profile can set
+`preprocessing.trim_start_s` (see `diaphorina_citri.yaml`, set to 600 —
+the first ~10 min of acquisition on this rig is consistently noisy) to
+drop the start of every recording before windowing, training, and
+evaluation. Override per-run with `--trim-start-s`. This never affects
+`predict`'s exported `.ANA` file, which always stays full-length and
+time-aligned with the original recording.
 
 ## Streamlit app
 
@@ -109,21 +130,52 @@ request/response UI.
    don't let them live in git history; the app takes recordings via
    upload, not from a bundled folder).
 2. On [share.streamlit.io](https://share.streamlit.io), point at the
-   repo and `streamlit_app.py`. `requirements.txt` installs the package
-   itself via `pip install -e .[app]`.
+   repo and `streamlit_app.py`. `requirements.txt` lists plain
+   dependencies (numpy, pandas, ..., streamlit) rather than an editable
+   install of `epg_tool` itself; `streamlit_app.py` instead adds its own
+   `src/` to `sys.path` relative to its own file location. Both choices
+   matter specifically if this app ever lives in a subfolder of a larger
+   monorepo rather than at a dedicated repo's root: `-e .` and bare
+   `model_registry` paths resolve against the installer's/process's
+   *working directory*, which Streamlit Cloud sets to the repo root
+   regardless of where the app file or its `models/` folder actually
+   sit — silently breaking both the install and model loading. Anchoring
+   everything to each file's own on-disk location (`Path(__file__)` /
+   the `epg_tool` package's location, see `models/registry.py`) instead
+   works the same whether the app is at the repo root or nested.
 3. Trained model artifacts under `models/<species>/*.joblib` **are**
-   committed (a few MB each) so the deployed app has something beyond
-   the rule-based baseline out of the box. Retrain and commit again as
-   more labeled data comes in; move to Git LFS if they grow large.
+   committed so the deployed app has something beyond the rule-based
+   baseline out of the box (currently ~42MB for random_forest, ~7MB for
+   xgboost — comfortably under GitHub's 100MB hard limit, see the
+   hyperparameter note below). Retrain and commit again as more labeled
+   data comes in; move to Git LFS if a future model grows past ~50-80MB.
 
 ## Known limitations / next steps
 
-- **Single-recording baseline today.** Metrics reported by `train` on
-  this dataset are a chronological-split sanity check, not a real
-  estimate — several classes (E1, G) are rare enough that they can end
-  up entirely on one side of the split. Both the group-split and the
-  warning are already in place; they'll kick in automatically once
-  3+ insects are available.
+- **`D` waveform is hard to detect.** Across 20 *D. citri* insects (16
+  calibration / 4 held-out validation, 80/20 split by individual),
+  XGBoost reaches ~84% held-out accuracy and Random Forest ~81%, but
+  both struggle specifically with `D` (recall ~15-23%), which the model
+  frequently confuses with the much more common `E2` — visible directly
+  in the Streamlit app's per-insect confusion matrix and pie charts. `D`
+  is short-duration (mean ~46s per Bonani et al.) and rare relative to
+  `E2`, so this reads as a genuine class-imbalance/signal-similarity
+  challenge rather than a bug. Worth trying next: oversampling/class
+  weighting specifically for `D`, finer window sizes around C→D→E1
+  transitions, or `D`-specific engineered features.
+- **Per-insect variability is real and large.** Individual held-out
+  insects can score well below the aggregate validation accuracy (the
+  paper itself notes highly variable probing behavior between
+  individuals) — read single-recording accuracy in the Streamlit app as
+  one data point, not a generalization estimate; the CLI's aggregate
+  held-out metrics across all validation insects are the more meaningful
+  number.
+- **Random Forest hyperparameters are deliberately regularized**
+  (`max_depth=12, min_samples_leaf=20, n_estimators=150` in
+  `models/tabular.py`) — an unbounded-depth forest on ~450k calibration
+  windows produced a 1.1GB file (unusable for git/GitHub) with no better
+  held-out accuracy than the regularized version. Revisit these if
+  retraining on substantially more data changes that trade-off.
 - **Rule-based %amplitude calibration.** The Bonani et al. Table 1
   convention assumes voltage gained to within the 5V full-scale range;
   this dataset's raw `.D0x` values run much smaller (~0.1-0.3V), so the

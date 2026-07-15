@@ -59,6 +59,49 @@ class EPGSession:
         )
 
 
+def trim_session_start(session: EPGSession, trim_s: float) -> EPGSession:
+    """Drop the first ``trim_s`` seconds of a session (e.g. a noisy
+    acquisition warm-up period) and re-zero time for everything after
+    it. Segments entirely within the trimmed window are dropped; one
+    straddling the cut point is truncated to start at the new t=0.
+    A no-op (returns ``session`` unchanged) when ``trim_s <= 0``."""
+    if trim_s <= 0:
+        return session
+
+    trim_idx = round(trim_s * session.sample_rate_hz)
+    if trim_idx >= len(session.samples):
+        raise ValueError(
+            f"trim_s={trim_s} (>= session duration {session.duration_s}s) would remove the entire recording"
+        )
+
+    new_segments = []
+    for seg in session.segments:
+        if seg.end_idx <= trim_idx:
+            continue  # entirely within the trimmed window
+        new_start_idx = max(seg.start_idx, trim_idx) - trim_idx
+        new_end_idx = seg.end_idx - trim_idx
+        new_segments.append(
+            LabeledSegment(
+                code=seg.code,
+                start_s=new_start_idx / session.sample_rate_hz,
+                end_s=new_end_idx / session.sample_rate_hz,
+                start_idx=new_start_idx,
+                end_idx=new_end_idx,
+            )
+        )
+
+    new_recording_end_s = session.recording_end_s - trim_s if session.recording_end_s is not None else None
+
+    return EPGSession(
+        insect_id=session.insect_id,
+        samples=session.samples[trim_idx:],
+        sample_rate_hz=session.sample_rate_hz,
+        source_files=session.source_files,
+        segments=new_segments,
+        recording_end_s=new_recording_end_s,
+    )
+
+
 def load_d0x_session(any_d0x_file: str | Path) -> tuple[np.ndarray, float, list[Path]]:
     """Load and concatenate every .D0x sibling of ``any_d0x_file`` in
     numeric-suffix order. Raises if sample rates disagree across files."""

@@ -22,6 +22,8 @@ def spectral_features(window: np.ndarray, sample_rate_hz: float, context: dict) 
         return {
             "spec_dominant_freq_hz": 0.0,
             "spec_centroid_hz": 0.0,
+            "spec_flatness": 0.0,
+            "spec_entropy": 0.0,
             **{f"spec_band_{lo:g}_{hi:g}hz": 0.0 for lo, hi in zip(_BAND_EDGES_HZ, _BAND_EDGES_HZ[1:])},
         }
 
@@ -36,9 +38,21 @@ def spectral_features(window: np.ndarray, sample_rate_hz: float, context: dict) 
     if ac_power.sum() > 0:
         dominant_freq = float(ac_freqs[np.argmax(ac_power)])
         centroid = float(np.sum(ac_freqs * ac_power) / np.sum(ac_power))
+        # Spectral flatness (Wiener entropy): geometric/arithmetic mean of
+        # the power spectrum, 1.0 for pure noise (flat) down toward 0 for
+        # a single dominant tone -- separates noise-like Np from clearly
+        # periodic probing waveforms. Spectral entropy: normalized Shannon
+        # entropy of the power distribution, same "noisy vs tonal" idea
+        # from a different angle.
+        ac_power_safe = ac_power + 1e-12
+        flatness = float(np.exp(np.mean(np.log(ac_power_safe))) / np.mean(ac_power_safe))
+        probs = ac_power_safe / ac_power_safe.sum()
+        entropy = float(-np.sum(probs * np.log(probs)) / np.log(len(probs)))
     else:
         dominant_freq = 0.0
         centroid = 0.0
+        flatness = 0.0
+        entropy = 0.0
 
     total_power = power.sum() or 1.0
     band_features = {}
@@ -49,5 +63,7 @@ def spectral_features(window: np.ndarray, sample_rate_hz: float, context: dict) 
     return {
         "spec_dominant_freq_hz": dominant_freq,
         "spec_centroid_hz": centroid,
+        "spec_flatness": flatness,
+        "spec_entropy": entropy,
         **band_features,
     }

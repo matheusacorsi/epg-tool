@@ -12,6 +12,18 @@ def test_load_diaphorina_citri_profile():
     assert profile.sentinel_codes == frozenset({99})
     assert profile.label_for_code(3) == "D"
     assert profile.label_for_code(99) is None
+    assert profile.trim_start_s == 600
+
+
+def test_profile_without_preprocessing_section_defaults_to_no_trim():
+    profile = SpeciesProfile(
+        name="bare",
+        common_name="bare",
+        reference="",
+        waveforms=[WaveformDef(code=1, label="Np")],
+        sentinel_codes=frozenset({99}),
+    )
+    assert profile.trim_start_s == 0.0
 
 
 def test_unknown_profile_raises():

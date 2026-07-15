@@ -40,7 +40,7 @@ from epg_tool.export.plotting import plot_session, plot_time_distribution_pies
 from epg_tool.features import extract_features, make_inference_windows, make_windows
 from epg_tool.features.baseline import estimate_np_baseline
 from epg_tool.features.windowing import build_sample_labels
-from epg_tool.io.session import EPGSession, build_session_from_bytes
+from epg_tool.io.session import EPGSession, build_session_from_bytes, trim_session_start
 from epg_tool.models.registry import has_trained_model, load_model
 from epg_tool.models.rules import RuleBasedClassifier
 from epg_tool.models.tabular import TabularModel
@@ -88,6 +88,15 @@ with st.sidebar:
             model_type = "rule_based"
 
     window_s = st.number_input("Window size (s)", min_value=0.1, value=1.0, step=0.5)
+    trim_start_s = st.number_input(
+        "Exclude first N seconds from results (noisy acquisition warm-up)",
+        min_value=0.0,
+        value=float(profile.trim_start_s),
+        step=60.0,
+        help="Matches how the bundled model was trained -- applied to plots, accuracy, and "
+        "behavioral parameters below, but not to the downloaded .ANA (which stays "
+        "full-length and time-aligned with the original recording).",
+    )
 
 
 def get_classifier(model_type: str, uploaded_model: TabularModel | None, profile):
@@ -170,10 +179,23 @@ if "result" not in st.session_state:
     st.stop()
 
 result = st.session_state["result"]
-predicted_session = result["predicted_session"]
+predicted_session_full = result["predicted_session"]
+
+# Everything below this point is "results" (review, accuracy, parameters)
+# and uses the trimmed view for consistency with how the bundled model
+# was trained; the .ANA download in section 6 uses the full, untrimmed
+# session so the exported file stays time-aligned with the original
+# recording when reloaded into Stylet+.
+try:
+    session_display = trim_session_start(session, trim_start_s)
+    predicted_session_display = trim_session_start(predicted_session_full, trim_start_s)
+except ValueError as exc:
+    st.error(f"{exc} -- showing untrimmed results instead.")
+    session_display = session
+    predicted_session_display = predicted_session_full
 
 st.subheader("3. Review")
-max_t = session.duration_s
+max_t = session_display.duration_s
 start_s, end_s = st.slider(
     "Time range to display (s)", min_value=0.0, max_value=float(max_t), value=(0.0, float(min(max_t, 3600.0)))
 )
@@ -181,35 +203,46 @@ start_s, end_s = st.slider(
 plot_cols = st.columns(2) if has_ground_truth else [st.container()]
 with plot_cols[0]:
     st.markdown("**Predicted**")
-    fig, _ = plot_session(predicted_session, profile, start_s=start_s, end_s=end_s)
+    fig, _ = plot_session(predicted_session_display, profile, start_s=start_s, end_s=end_s)
     st.pyplot(fig)
     plt.close(fig)
 
 if has_ground_truth:
     with plot_cols[1]:
         st.markdown("**Ground truth**")
-        fig, _ = plot_session(session, profile, start_s=start_s, end_s=end_s)
+        fig, _ = plot_session(session_display, profile, start_s=start_s, end_s=end_s)
         st.pyplot(fig)
         plt.close(fig)
 
-pie_sessions = {"Predicted": predicted_session}
+pie_sessions = {"Predicted": predicted_session_display}
 if has_ground_truth:
-    pie_sessions["Ground truth"] = session
+    pie_sessions["Ground truth"] = session_display
 fig = plot_time_distribution_pies(pie_sessions, profile)
 st.pyplot(fig)
 plt.close(fig)
 
-pred_df = predicted_session.to_dataframe()
+pred_df = predicted_session_display.to_dataframe()
 pred_df["label"] = pred_df["code"].map(profile.code_to_label)
 st.markdown("**Predicted segments**")
 st.dataframe(pred_df, use_container_width=True)
 
 if has_ground_truth:
     st.subheader("4. Accuracy against ground truth")
-    gt_windows = make_windows(session, window_s=window_s)
-    gt_context = {"np_baseline_v": context["np_baseline_v"]}
+    # Match build_features_for_session's methodology exactly (trim, then
+    # derive the baseline from the trimmed session's own Np-labeled
+    # samples) so this is a faithful read of the model's held-out
+    # validation performance, not skewed by reusing a baseline computed
+    # over the untrimmed (and deliberately excluded) noisy warm-up period.
+    np_code_display = profile.label_to_code.get("Np")
+    np_mask_display = (
+        build_sample_labels(len(session_display.samples), session_display.segments) == np_code_display
+        if np_code_display is not None
+        else np.zeros(len(session_display.samples), dtype=bool)
+    )
+    gt_context = {"np_baseline_v": estimate_np_baseline(session_display.samples, np_mask_display)}
+    gt_windows = make_windows(session_display, window_s=window_s)
     gt_X = pd.DataFrame(
-        [extract_features(w.samples, session.sample_rate_hz, context=gt_context) for w in gt_windows]
+        [extract_features(w.samples, session_display.sample_rate_hz, context=gt_context) for w in gt_windows]
     )
     clf = get_classifier(model_type, uploaded_model, profile)
     gt_pred = clf.predict(gt_X)
@@ -224,7 +257,7 @@ if has_ground_truth:
     st.dataframe(eval_result.confusion_matrix, use_container_width=True)
 
 st.subheader("5. Behavioral parameters")
-param_session = session if has_ground_truth else predicted_session
+param_session = session_display if has_ground_truth else predicted_session_display
 nonseq = nonsequential_parameters(param_session, profile)
 seq = sequential_parameters(param_session, profile)
 trans = transition_matrix([param_session], profile)

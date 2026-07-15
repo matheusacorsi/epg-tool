@@ -10,7 +10,7 @@ from epg_tool.io.session import EPGSession, LabeledSegment
 
 def test_available_extractors_registered():
     names = available_extractors()
-    assert {"amplitude", "spectral", "wavelet", "slope", "baseline"} <= set(names)
+    assert {"amplitude", "spectral", "wavelet", "slope", "baseline", "shape", "peaks"} <= set(names)
 
 
 def test_amplitude_features_basic():
@@ -29,6 +29,57 @@ def test_spectral_features_detects_dominant_frequency():
     feats = extract_features(signal, sample_rate_hz, extractors=["spectral"])
     assert feats["spec_dominant_freq_hz"] == pytest.approx(10.0, abs=1.0)
     assert 0.0 <= feats["spec_band_5_10hz"] <= 1.0
+
+
+def test_spectral_flatness_and_entropy_distinguish_noise_from_tone():
+    sample_rate_hz = 100.0
+    t = np.arange(200) / sample_rate_hz
+    tone = np.sin(2 * np.pi * 10.0 * t)
+    noise = np.random.default_rng(0).normal(size=200)
+
+    tone_feats = extract_features(tone, sample_rate_hz, extractors=["spectral"])
+    noise_feats = extract_features(noise, sample_rate_hz, extractors=["spectral"])
+
+    assert 0.0 <= tone_feats["spec_flatness"] <= 1.0
+    assert 0.0 <= noise_feats["spec_flatness"] <= 1.0
+    # a pure tone has a much peakier (less flat, lower entropy) spectrum than noise
+    assert tone_feats["spec_flatness"] < noise_feats["spec_flatness"]
+    assert tone_feats["spec_entropy"] < noise_feats["spec_entropy"]
+
+
+def test_shape_features_skew_and_percentile_spread():
+    window = np.array([0.0, 0.0, 0.0, 0.0, 10.0])  # right-skewed with one outlier
+    feats = extract_features(window, sample_rate_hz=100.0, extractors=["shape"])
+    assert feats["shape_skewness"] > 0
+    assert feats["shape_p10_p90_range"] >= 0
+    assert feats["shape_iqr"] >= 0
+
+
+def test_shape_features_constant_window_has_no_nan():
+    window = np.full(10, 0.5)
+    feats = extract_features(window, sample_rate_hz=100.0, extractors=["shape"])
+    assert feats["shape_skewness"] == 0.0
+    assert feats["shape_kurtosis"] == 0.0
+    assert not any(np.isnan(v) for v in feats.values())
+
+
+def test_peak_features_detects_periodic_spikes():
+    sample_rate_hz = 100.0
+    n = 500
+    window = np.zeros(n)
+    spike_positions = np.arange(10, n, 50)  # regular spikes every 0.5s
+    window[spike_positions] = 5.0
+    feats = extract_features(window, sample_rate_hz, extractors=["peaks"])
+    assert feats["peaks_rate_per_s"] == pytest.approx(len(spike_positions) / (n / sample_rate_hz), rel=0.3)
+    assert feats["peaks_mean_prominence"] > 0
+    assert feats["peaks_interval_cv"] < 0.5  # regularly spaced -> low variability
+
+
+def test_peak_features_flat_window_has_no_peaks():
+    window = np.zeros(100)
+    feats = extract_features(window, sample_rate_hz=100.0, extractors=["peaks"])
+    assert feats["peaks_rate_per_s"] == 0.0
+    assert feats["peaks_mean_prominence"] == 0.0
 
 
 def test_wavelet_features_keys_present():

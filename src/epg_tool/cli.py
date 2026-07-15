@@ -83,13 +83,19 @@ def train(
     window_s: float = typer.Option(1.0),
     step_s: Optional[float] = typer.Option(None),
     min_purity: float = typer.Option(0.5, help="Drop windows where the majority label covers less than this"),
-    test_size: float = typer.Option(0.2),
-    val_size: float = typer.Option(0.2),
+    test_size: float = typer.Option(0.2, help="Held-out validation fraction (by insect)"),
+    val_size: float = typer.Option(
+        0.0, help="Extra tuning-validation fraction on top of test_size; 0 for a plain calibration/validation split"
+    ),
+    trim_start_s: Optional[float] = typer.Option(
+        None, help="Seconds to drop from the start of every recording; defaults to the species profile's setting"
+    ),
     out: Optional[Path] = typer.Option(None, help="Where to save the model; defaults to the species registry path"),
 ):
     """Discover recordings under DATA_ROOT, build a windowed feature
-    dataset split by insect individual, train a tabular model, and report
-    validation metrics."""
+    dataset split by insect individual (default: 80% calibration / 20%
+    held-out validation), train a tabular model, and report validation
+    metrics."""
     from epg_tool.models.registry import model_path_for, save_model
     from epg_tool.training.dataset import build_dataset, discover_recordings, group_train_val_test_split
     from epg_tool.training.evaluate import evaluate
@@ -100,20 +106,38 @@ def train(
         raise typer.BadParameter(f"No .D0x/.ANA pairs found under {data_root}")
     typer.echo(f"Found {len(recordings)} recording(s): {[r.insect_id for r in recordings]}")
 
-    X, y, groups = build_dataset(recordings, profile, window_s=window_s, step_s=step_s, min_purity=min_purity)
+    effective_trim = profile.trim_start_s if trim_start_s is None else trim_start_s
+    typer.echo(f"Trimming first {effective_trim:.0f}s of each recording before windowing")
+    X, y, groups = build_dataset(
+        recordings, profile, window_s=window_s, step_s=step_s, min_purity=min_purity, trim_start_s=trim_start_s
+    )
     typer.echo(f"Built {len(X)} windows across {len(set(groups))} insect(s)")
 
     split = group_train_val_test_split(X, y, groups, test_size=test_size, val_size=val_size)
+    typer.echo(
+        f"Calibration: {len(split.train[0])} windows ({len(set(split.train[2]))} insects) -- "
+        f"Validation: {len(split.test[0])} windows ({len(set(split.test[2]))} insects)"
+        + (f" -- Tuning: {len(split.val[0])} windows ({len(set(split.val[2]))} insects)" if len(split.val[0]) else "")
+    )
 
     clf = _build_model(model)
     clf.fit(*split.train[:2])
 
     val_X, val_y, _ = split.val
     if len(val_X) > 0:
-        val_result = evaluate(val_y, clf.predict(val_X), profile)
-        typer.echo(f"\nValidation accuracy: {val_result.accuracy:.3f}")
-        typer.echo(f"Validation time-overlap agreement: {val_result.time_overlap_agreement:.3f}")
-        typer.echo(val_result.classification_report.to_string())
+        tuning_result = evaluate(val_y, clf.predict(val_X), profile)
+        typer.echo(f"\nTuning-validation accuracy: {tuning_result.accuracy:.3f}")
+        typer.echo(f"Tuning-validation time-overlap agreement: {tuning_result.time_overlap_agreement:.3f}")
+        typer.echo(tuning_result.classification_report.to_string())
+
+    test_X, test_y, _ = split.test
+    if len(test_X) > 0:
+        test_result = evaluate(test_y, clf.predict(test_X), profile)
+        typer.echo(f"\nHeld-out validation accuracy: {test_result.accuracy:.3f}")
+        typer.echo(f"Held-out validation time-overlap agreement: {test_result.time_overlap_agreement:.3f}")
+        typer.echo(test_result.classification_report.to_string())
+        typer.echo("\nConfusion matrix (held-out validation):")
+        typer.echo(test_result.confusion_matrix.to_string())
 
     if out is None:
         out_path = save_model(clf, profile, model)
@@ -131,6 +155,9 @@ def evaluate(
     window_s: float = typer.Option(1.0),
     step_s: Optional[float] = typer.Option(None),
     min_purity: float = typer.Option(0.5),
+    trim_start_s: Optional[float] = typer.Option(
+        None, help="Seconds to drop from the start of every recording; defaults to the species profile's setting"
+    ),
 ):
     """Evaluate an already-trained model (or the rule-based baseline)
     against every recording under DATA_ROOT."""
@@ -141,7 +168,9 @@ def evaluate(
 
     profile = _load_species(species)
     recordings = discover_recordings(data_root)
-    X, y, groups = build_dataset(recordings, profile, window_s=window_s, step_s=step_s, min_purity=min_purity)
+    X, y, groups = build_dataset(
+        recordings, profile, window_s=window_s, step_s=step_s, min_purity=min_purity, trim_start_s=trim_start_s
+    )
 
     clf = RuleBasedClassifier(profile) if model == "rule_based" else load_model(profile, model)
     result = evaluate_predictions(y, clf.predict(X), profile)

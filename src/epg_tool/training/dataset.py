@@ -17,7 +17,7 @@ from epg_tool.features import extract_features, make_windows
 from epg_tool.features.baseline import estimate_np_baseline
 from epg_tool.features.windowing import build_sample_labels
 from epg_tool.io.d0x import is_d0x_filename
-from epg_tool.io.session import build_session
+from epg_tool.io.session import build_session, trim_session_start
 from epg_tool.species.profile import SpeciesProfile
 
 
@@ -36,23 +36,21 @@ def _stem_for_ana(ana_path: Path) -> str:
     return stem[:-1] if stem.endswith("_") else stem
 
 
-def find_matching_d0x(ana_path: Path) -> list[Path]:
-    """Locate the .D0x series for one .ANA file. Tries the .ANA file's own
-    directory first, then its parent and grandparent -- covers both
-    "everything in one folder" and the observed Stylet+ layout where
-    annotations sit in a DataANA/ subfolder next to arquivosDataAcquisition/."""
+def find_matching_d0x(ana_path: Path, search_root: Path) -> list[Path]:
+    """Locate the .D0x series for one .ANA file by recursively searching
+    ``search_root`` for files sharing the .ANA file's stem -- robust to
+    whatever folder-naming convention a given data export used (a
+    DataANA/ subfolder next to the .D0x files in one batch, unrelated
+    sibling names like "ArquivosD0 Testemunha" / "Testemunha ANA" in
+    another), since it doesn't assume any fixed parent/child relationship
+    between the two, just a shared root somewhere above both."""
     stem = _stem_for_ana(ana_path)
     from epg_tool.io.d0x import find_d0x_series
 
-    for directory in (ana_path.parent, ana_path.parent.parent, ana_path.parent.parent.parent):
-        if not directory.exists():
-            continue
-        matches = sorted(
-            p for p in directory.glob(f"{stem}.D*") if is_d0x_filename(p.name)
-        )
-        if matches:
-            return find_d0x_series(matches[0])
-    raise FileNotFoundError(f"No .D0x series found for annotation file {ana_path}")
+    matches = sorted(p for p in search_root.rglob(f"{stem}.D*") if is_d0x_filename(p.name))
+    if matches:
+        return find_d0x_series(matches[0])
+    raise FileNotFoundError(f"No .D0x series found for annotation file {ana_path} under {search_root}")
 
 
 def discover_recordings(data_root: str | Path, ana_glob: str = "*.ANA") -> list[RecordingRef]:
@@ -62,7 +60,7 @@ def discover_recordings(data_root: str | Path, ana_glob: str = "*.ANA") -> list[
     data_root = Path(data_root)
     recordings = []
     for ana_path in sorted(data_root.rglob(ana_glob)):
-        d0x_paths = find_matching_d0x(ana_path)
+        d0x_paths = find_matching_d0x(ana_path, search_root=data_root)
         recordings.append(
             RecordingRef(insect_id=_stem_for_ana(ana_path), d0x_paths=d0x_paths, ana_path=ana_path)
         )
@@ -76,7 +74,10 @@ def build_features_for_session(
     step_s: float | None = None,
     min_purity: float = 0.0,
     extractors: list[str] | None = None,
+    trim_start_s: float | None = None,
 ) -> tuple[pd.DataFrame, np.ndarray]:
+    session = trim_session_start(session, profile.trim_start_s if trim_start_s is None else trim_start_s)
+
     np_code = profile.label_to_code.get("Np")
     if np_code is not None:
         np_mask = build_sample_labels(len(session.samples), session.segments) == np_code
@@ -97,6 +98,7 @@ def build_dataset(
     step_s: float | None = None,
     min_purity: float = 0.0,
     extractors: list[str] | None = None,
+    trim_start_s: float | None = None,
 ) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
     """Build (X, y, groups) across every recording, where ``groups`` is
     the insect_id -- the unit that train/val/test splitting must respect."""
@@ -105,7 +107,7 @@ def build_dataset(
         session = build_session(
             rec.d0x_paths[0], rec.ana_path, insect_id=rec.insect_id, sentinel_codes=profile.sentinel_codes
         )
-        X, y = build_features_for_session(session, profile, window_s, step_s, min_purity, extractors)
+        X, y = build_features_for_session(session, profile, window_s, step_s, min_purity, extractors, trim_start_s)
         X_parts.append(X)
         y_parts.append(y)
         group_parts.append(np.full(len(y), rec.insect_id))
@@ -174,6 +176,15 @@ def group_train_val_test_split(
 
     gss_test = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=random_state)
     train_val_idx, test_idx = next(gss_test.split(X, y, groups))
+
+    if val_size <= 0:
+        # Plain two-way calibration/validation split -- no separate
+        # tuning set requested.
+        return DatasetSplit(
+            train=_subset(X, y, groups, train_val_idx),
+            val=_subset(X, y, groups, np.array([], dtype=int)),
+            test=_subset(X, y, groups, test_idx),
+        )
 
     val_relative_size = val_size / (1 - test_size)
     gss_val = GroupShuffleSplit(n_splits=1, test_size=val_relative_size, random_state=random_state)

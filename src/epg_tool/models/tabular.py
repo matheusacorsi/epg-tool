@@ -71,8 +71,14 @@ def random_forest_model(**kwargs) -> TabularModel:
     from sklearn.ensemble import RandomForestClassifier
 
     params = dict(
-        n_estimators=300,
-        max_depth=None,
+        n_estimators=150,
+        # Unbounded depth on a large dataset (hundreds of thousands of
+        # windows) grows enormous, overfit trees -- multi-GB model files
+        # that are both impractical to ship and worse on held-out data
+        # than a properly regularized forest. These bounds are a general
+        # regularization default, not tuned to one dataset's size.
+        max_depth=12,
+        min_samples_leaf=20,
         class_weight="balanced",
         random_state=42,
         n_jobs=-1,
