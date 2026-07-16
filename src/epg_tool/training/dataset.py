@@ -120,6 +120,43 @@ def build_dataset(
     return X, y, groups
 
 
+def sequences_by_group(y: np.ndarray, groups: np.ndarray, keep_groups=None) -> list[np.ndarray]:
+    """Split a flat label array into per-recording sequences (in time
+    order), optionally restricted to ``keep_groups`` -- the input for
+    learning a transition matrix. Assumes rows are already in per-recording
+    time order (as :func:`build_dataset` produces them)."""
+    keep = None if keep_groups is None else set(keep_groups)
+    out = []
+    for g in pd.unique(groups):
+        if keep is None or g in keep:
+            out.append(y[groups == g])
+    return out
+
+
+def predict_postprocessed(clf, X: pd.DataFrame, groups: np.ndarray, profile: SpeciesProfile, threshold: float | None = None) -> np.ndarray:
+    """Predict codes for ``X`` applying sequence decoding + the confidence
+    gate **per recording** (decoding must never span two recordings). Falls
+    back to plain argmax when the profile disables decoding or the model
+    carries no transition matrix. ``threshold`` overrides the profile's
+    confidence threshold when given (pass 0 for un-gated evaluation metrics)."""
+    from epg_tool.models.postprocess import postprocess_predictions
+
+    proba = clf.predict_proba(X)
+    classes = list(clf.classes_)
+    tl = getattr(clf, "transition_log", None)
+    transition_log = tl if (profile.decode_sequence and tl is not None) else None
+    thr = profile.confidence_threshold if threshold is None else threshold
+
+    out = np.empty(len(X), dtype=int)
+    for g in pd.unique(groups):
+        mask = groups == g
+        out[mask] = postprocess_predictions(
+            proba[mask], classes, transition_log=transition_log,
+            threshold=thr, unclassified_code=profile.unclassified_code,
+        )
+    return out
+
+
 def compute_class_sample_weights(y: np.ndarray, profile: SpeciesProfile) -> np.ndarray:
     """Inverse-class-frequency ("balanced") sample weights, with an extra
     per-label multiplier from the species profile's

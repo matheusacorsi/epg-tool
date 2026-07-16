@@ -54,6 +54,36 @@ training:
   class_weight_multipliers:
     D: 2.0
 
+# Sequence post-processing. The window classifier scores each 4s window
+# independently, so it can emit biologically implausible flips; Viterbi
+# decoding over the per-window probabilities (transition matrix learned at
+# train time) smooths these and enforces the waveform grammar. On the
+# 20-insect split this raised held-out accuracy 0.859 -> 0.874 and lifted
+# rare-class precision (D 0.37 -> 0.46, E1, G). allowed_transitions is
+# Bonani et al.'s biological grammar (self-transitions always allowed); it
+# is used ONLY to hard-zero transitions that are both listed-impossible
+# here AND essentially absent from the training data -- everything else
+# stays data-driven, because this dataset's annotations don't obey the
+# paper's strict determinism (e.g. D->E1 is ~55%, not 100%, at the event
+# level). A greedy "mask given previous prediction" rule was tested and
+# rejected: it cascaded errors (0.859 -> 0.730). confidence_threshold gates
+# low-confidence windows to `unclassified` for manual review rather than
+# forcing a guess (adjustable in the app / via --confidence-threshold).
+sequence:
+  decode: true
+  confidence_threshold: 0.55
+  allowed_transitions:
+    Np: [C]
+    C: [Np, D, G]
+    D: [E1]
+    E1: [C, E2]
+    E2: [C]
+    G: [C]
+  unclassified:
+    code: 0
+    label: unclassified
+    color: "#d9d9d9"
+
 waveforms:
   - code: 1
     label: Np

@@ -96,12 +96,15 @@ def train(
     dataset split by insect individual (default: 80% calibration / 20%
     held-out validation), train a tabular model, and report validation
     metrics."""
+    from epg_tool.models.postprocess import build_blended_transition_log
     from epg_tool.models.registry import model_path_for, save_model
     from epg_tool.training.dataset import (
         build_dataset,
         compute_class_sample_weights,
         discover_recordings,
         group_train_val_test_split,
+        predict_postprocessed,
+        sequences_by_group,
     )
     from epg_tool.training.evaluate import evaluate
 
@@ -136,17 +139,34 @@ def train(
     sample_weight = compute_class_sample_weights(train_y, profile) if model == "xgboost" else None
     clf.fit(train_X, train_y, sample_weight=sample_weight)
 
-    val_X, val_y, _ = split.val
+    # Learn the blended transition matrix from the calibration insects only
+    # (never the held-out ones) and bundle it with the model so `predict`,
+    # `evaluate`, and the app can Viterbi-decode with it.
+    if profile.decode_sequence:
+        classes = list(clf.classes_)
+        train_seqs = sequences_by_group(y, groups, keep_groups=set(split.train[2]))
+        clf.transition_log = build_blended_transition_log(
+            train_seqs, classes, profile.allowed_transitions, profile.code_to_label
+        )
+        clf.decode_classes = classes
+        typer.echo("Learned blended transition matrix for Viterbi decoding")
+
+    val_X, val_y, val_groups = split.val
     if len(val_X) > 0:
-        tuning_result = evaluate(val_y, clf.predict(val_X), profile)
+        val_pred = predict_postprocessed(clf, val_X, val_groups, profile, threshold=0.0)
+        tuning_result = evaluate(val_y, val_pred, profile)
         typer.echo(f"\nTuning-validation accuracy: {tuning_result.accuracy:.3f}")
         typer.echo(f"Tuning-validation time-overlap agreement: {tuning_result.time_overlap_agreement:.3f}")
         typer.echo(tuning_result.classification_report.to_string())
 
-    test_X, test_y, _ = split.test
+    test_X, test_y, test_groups = split.test
     if len(test_X) > 0:
-        test_result = evaluate(test_y, clf.predict(test_X), profile)
-        typer.echo(f"\nHeld-out validation accuracy: {test_result.accuracy:.3f}")
+        # Report the shipped pipeline's numbers: decoded, but un-gated
+        # (threshold=0) so accuracy isn't conflated with review coverage.
+        test_pred = predict_postprocessed(clf, test_X, test_groups, profile, threshold=0.0)
+        test_result = evaluate(test_y, test_pred, profile)
+        decode_note = " (Viterbi-decoded)" if profile.decode_sequence and clf.transition_log is not None else ""
+        typer.echo(f"\nHeld-out validation accuracy{decode_note}: {test_result.accuracy:.3f}")
         typer.echo(f"Held-out validation time-overlap agreement: {test_result.time_overlap_agreement:.3f}")
         typer.echo(test_result.classification_report.to_string())
         typer.echo("\nConfusion matrix (held-out validation):")
@@ -176,7 +196,7 @@ def evaluate(
     against every recording under DATA_ROOT."""
     from epg_tool.models.registry import load_model
     from epg_tool.models.rules import RuleBasedClassifier
-    from epg_tool.training.dataset import build_dataset, discover_recordings
+    from epg_tool.training.dataset import build_dataset, discover_recordings, predict_postprocessed
     from epg_tool.training.evaluate import evaluate as evaluate_predictions
 
     profile = _load_species(species)
@@ -186,8 +206,14 @@ def evaluate(
         recordings, profile, window_s=effective_window, step_s=step_s, min_purity=min_purity, trim_start_s=trim_start_s
     )
 
-    clf = RuleBasedClassifier(profile) if model == "rule_based" else load_model(profile, model)
-    result = evaluate_predictions(y, clf.predict(X), profile)
+    if model == "rule_based":
+        clf = RuleBasedClassifier(profile)
+        y_pred = clf.predict(X)
+    else:
+        clf = load_model(profile, model)
+        # Decoded but un-gated (threshold=0), matching how `train` reports.
+        y_pred = predict_postprocessed(clf, X, groups, profile, threshold=0.0)
+    result = evaluate_predictions(y, y_pred, profile)
 
     typer.echo(f"Accuracy: {result.accuracy:.3f}")
     typer.echo(f"Time-overlap agreement: {result.time_overlap_agreement:.3f}")
@@ -203,6 +229,9 @@ def predict(
     model: str = typer.Option("random_forest", help="random_forest, xgboost, or rule_based"),
     window_s: Optional[float] = typer.Option(None, help="Window length (s); defaults to the species profile's setting"),
     step_s: Optional[float] = typer.Option(None),
+    confidence_threshold: Optional[float] = typer.Option(
+        None, help="Windows below this top-posterior become 'unclassified'; defaults to the profile's setting"
+    ),
     out: Path = typer.Option(Path("predicted_.ANA")),
 ):
     """Classify an unlabeled recording and write a Stylet+-compatible
@@ -211,11 +240,13 @@ def predict(
     from epg_tool.features import extract_features, make_inference_windows
     from epg_tool.features.baseline import estimate_np_baseline
     from epg_tool.io.session import EPGSession, load_d0x_session
+    from epg_tool.models.postprocess import postprocess_predictions
     from epg_tool.models.registry import load_model
     from epg_tool.models.rules import RuleBasedClassifier
 
     profile = _load_species(species)
     window_s = profile.window_s if window_s is None else window_s
+    threshold = profile.confidence_threshold if confidence_threshold is None else confidence_threshold
     samples, sample_rate_hz, source_files = load_d0x_session(d0x)
     session = EPGSession(
         insect_id=d0x.stem,
@@ -241,11 +272,24 @@ def predict(
     context = {"np_baseline_v": estimate_np_baseline(feature_samples, np.zeros(len(feature_samples), dtype=bool))}
     X = pd.DataFrame([extract_features(w.samples, sample_rate_hz, context=context) for w in feature_windows])
 
-    clf = RuleBasedClassifier(profile) if model == "rule_based" else load_model(profile, model)
-    pred_codes = clf.predict(X)
+    if model == "rule_based":
+        clf = RuleBasedClassifier(profile)
+        pred_codes = clf.predict(X)
+    else:
+        clf = load_model(profile, model)
+        # One recording -> decode the whole window sequence in order, then
+        # apply the confidence gate (unclassified for low-confidence windows).
+        tl = getattr(clf, "transition_log", None)
+        transition_log = tl if (profile.decode_sequence and tl is not None) else None
+        pred_codes = postprocess_predictions(
+            clf.predict_proba(X), list(clf.classes_), transition_log=transition_log,
+            threshold=threshold, unclassified_code=profile.unclassified_code,
+        )
 
     write_ana_file(out, windows, pred_codes, session, profile)
-    typer.echo(f"Wrote predictions for {len(windows)} windows to {out}")
+    n_unclassified = int(np.sum(pred_codes == profile.unclassified_code)) if model != "rule_based" else 0
+    note = f" ({n_unclassified} below confidence {threshold:g}, marked unclassified)" if n_unclassified else ""
+    typer.echo(f"Wrote predictions for {len(windows)} windows to {out}{note}")
 
 
 @app.command(name="export-parameters")

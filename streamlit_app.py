@@ -47,6 +47,7 @@ from epg_tool.io.session import (
     normalize_session,
     trim_session_start,
 )
+from epg_tool.models.postprocess import postprocess_predictions
 from epg_tool.models.registry import has_trained_model, load_model
 from epg_tool.models.rules import RuleBasedClassifier
 from epg_tool.models.tabular import TabularModel
@@ -108,6 +109,19 @@ with st.sidebar:
         help="Matches how the bundled model was trained -- applied to plots, accuracy, and "
         "behavioral parameters below, but not to the downloaded .ANA (which stays "
         "full-length and time-aligned with the original recording).",
+    )
+    decode_sequence = st.checkbox(
+        "Sequence decoding (Viterbi)",
+        value=bool(profile.decode_sequence),
+        help="Smooth per-window predictions using the learned waveform-transition grammar. "
+        "Raises accuracy and rare-class precision; ignored for the rule-based model or "
+        "models trained without a transition matrix.",
+    )
+    confidence_threshold = st.slider(
+        "Confidence threshold (below -> 'unclassified')",
+        min_value=0.0, max_value=0.95, value=float(profile.confidence_threshold), step=0.05,
+        help="Windows whose top model probability is below this are flagged 'unclassified' "
+        "for review instead of forcing a label. Set to 0 to disable.",
     )
 
 
@@ -180,7 +194,17 @@ if st.button("Run classification", type="primary"):
         )
 
     clf = get_classifier(model_type, uploaded_model, profile)
-    pred_codes = clf.predict(X)
+    if model_type == "rule_based":
+        pred_codes = clf.predict(X)
+    else:
+        # One recording -> decode the whole window sequence in order, then
+        # gate low-confidence windows to 'unclassified'.
+        tl = getattr(clf, "transition_log", None)
+        transition_log = tl if (decode_sequence and tl is not None) else None
+        pred_codes = postprocess_predictions(
+            clf.predict_proba(X), list(clf.classes_), transition_log=transition_log,
+            threshold=confidence_threshold, unclassified_code=profile.unclassified_code,
+        )
 
     predicted_segments = predictions_to_labeled_segments(windows, pred_codes, session.sample_rate_hz)
     predicted_session = EPGSession(
@@ -244,7 +268,7 @@ st.pyplot(fig)
 plt.close(fig)
 
 pred_df = predicted_session_display.to_dataframe()
-pred_df["label"] = pred_df["code"].map(profile.code_to_label)
+pred_df["label"] = pred_df["code"].map(profile.display_label_for_code)
 st.markdown("**Predicted segments**")
 st.dataframe(pred_df, use_container_width=True)
 
@@ -272,7 +296,17 @@ if has_ground_truth:
         [extract_features(w.samples, gt_feature_session.sample_rate_hz, context=gt_context) for w in gt_windows]
     )
     clf = get_classifier(model_type, uploaded_model, profile)
-    gt_pred = clf.predict(gt_X)
+    if model_type == "rule_based":
+        gt_pred = clf.predict(gt_X)
+    else:
+        # Decoded but un-gated (threshold 0), so accuracy reflects the model
+        # + sequence prior without conflating it with review coverage.
+        tl = getattr(clf, "transition_log", None)
+        transition_log = tl if (decode_sequence and tl is not None) else None
+        gt_pred = postprocess_predictions(
+            clf.predict_proba(gt_X), list(clf.classes_), transition_log=transition_log,
+            threshold=0.0, unclassified_code=profile.unclassified_code,
+        )
     gt_true = np.array([w.label_code for w in gt_windows])
 
     eval_result = evaluate(gt_true, gt_pred, profile)

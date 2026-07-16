@@ -25,6 +25,13 @@ class TabularModel:
     # this is how it gets the same rare-class boost (see DiscoEPG's
     # analogous oversampling fix for their rare/short "pd" waveform).
     class_weight: str | None = None
+    # Optional log transition matrix (+ its class order) for Viterbi
+    # sequence decoding at inference, learned from the training data at
+    # `train` time and bundled with the model. None on models trained
+    # before sequence decoding existed -- decoding silently falls back to
+    # per-window argmax then.
+    transition_log: np.ndarray | None = None
+    decode_classes: list | None = None
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "TabularModel":
         self.feature_names = list(X.columns)

@@ -16,6 +16,12 @@ def test_load_diaphorina_citri_profile():
     assert profile.normalize is True
     assert profile.window_s == 4.0
     assert profile.class_weight_multipliers == {"D": 2.0}
+    assert profile.decode_sequence is True
+    assert profile.confidence_threshold == 0.55
+    assert profile.allowed_transitions["D"] == ["E1"]
+    assert profile.unclassified_code == 0
+    assert profile.display_label_for_code(0) == "unclassified"
+    assert profile.display_label_for_code(3) == "D"
 
 
 def test_profile_without_preprocessing_section_defaults_to_no_trim():

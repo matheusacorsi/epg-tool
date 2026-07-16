@@ -82,7 +82,7 @@ epg-tool inspect  <d0x> <ana> --species diaphorina_citri     # print labeled seg
 epg-tool plot     <d0x> <ana> --species diaphorina_citri --out qc.png
 epg-tool train    <data_root> --species diaphorina_citri --model random_forest
 epg-tool evaluate <data_root> --species diaphorina_citri --model random_forest
-epg-tool predict  <d0x>       --species diaphorina_citri --model random_forest --out predicted_.ANA
+epg-tool predict  <d0x>       --species diaphorina_citri --model random_forest --confidence-threshold 0.55 --out predicted_.ANA
 epg-tool export-parameters <data_root> --species diaphorina_citri --out parameters.xlsx
 ```
 
@@ -117,6 +117,22 @@ ML feature extraction (see the D-tuning note under "Known limitations").
 Both are read from the profile by `train`, `evaluate`, `predict`, and the
 Streamlit app; override the window size per-run with `--window-s`. The
 rule-based classifier is never normalized (it reasons in absolute volts).
+
+**Sequence decoding + confidence gate.** Because each window is scored
+independently, the raw predictions can flip implausibly mid-probe. If a
+profile sets `sequence.decode: true`, `train` learns a first-order
+transition matrix from the calibration insects and bundles it with the
+model; `predict`/`evaluate`/the app then **Viterbi-decode** each
+recording's window sequence (in time order, never across recordings) to
+enforce the waveform grammar and smooth spurious flips. The matrix is
+*blended*: empirical everywhere, except transitions that are both
+biologically impossible (`sequence.allowed_transitions`) and essentially
+absent from the data, which are hard-zeroed — so it never contradicts the
+dataset's real annotations. `sequence.confidence_threshold` (also a
+per-run `--confidence-threshold` and a Streamlit slider, default 0.55)
+relabels windows whose top posterior is below it as `unclassified` for
+manual review instead of forcing a guess; those show up as a neutral band
+in plots, a slice in the pies, and code-0 rows in the exported `.ANA`.
 
 ## Streamlit app
 
@@ -196,18 +212,31 @@ request/response UI.
       the above and settled at `D×2`.
   Two DiscoEPG ideas were tried and *dropped*: feeding richer wavelet
   coefficients as features (their best XGBoost input for aphids) slightly
-  *hurt* here, and raw min/max normalization (see above). One idea was
-  evaluated and deferred: **neighbor-context features** (giving each
-  window summary features of its neighbors, motivated by `D` always
-  sitting between `C` and `E1`) raised overall accuracy further
-  (0.859 → 0.869) and helped `G`/`E1`, but did *not* help `D`
-  specifically and needs care to keep train/inference window semantics
-  identical — a good next step, but not shipped in this iteration.
+  *hurt* here, and raw min/max normalization (see above).
   Note that window size and the `D` multiplier were selected on the same
   held-out split they're reported on, so those specific figures are
   mildly optimistic; the *direction* of each change is consistent across
   the whole sweep, and the held-out recordings that were never used in
   training (see below) are the cleaner test.
+- **Sequence structure helps overall accuracy, but not `D` recall.**
+  EPG waveforms follow a strong first-order grammar (Bonani Fig. 6), so
+  Viterbi-decoding the per-window probabilities against a learned
+  transition matrix (`sequence.decode`) lifts held-out accuracy
+  **0.859 → 0.870** and sharply improves rare-class *precision*
+  (`D` 0.37 → 0.45, plus `E1`/`G`). It does **not** raise `D` *recall* —
+  decoding can't recover a `D` event the model labeled `E2` throughout,
+  because that's a feature-space confusion, not a sequence error. Three
+  related ideas were measured and **not** shipped for exactly this
+  reason: a **greedy t-1 transition mask** (what a naive reading of the
+  transition network suggests) actively *cascaded* errors, collapsing
+  accuracy to **0.730** — global Viterbi is used instead; **neighbor-context
+  features** raised overall accuracy (~0.869) but not `D`; and a
+  **hierarchical `D`-vs-`E2` specialist sub-model** gave ~zero gain over
+  the flat model (same features, same information). Also note this
+  dataset's annotations do *not* obey the paper's strict determinism
+  (`D`→`E1` is ~55% at the event level, not 100%), so the biological
+  grammar is used only to hard-zero transitions that are also empirically
+  absent — the decoder stays data-driven otherwise.
 - **Random Forest actually edges XGBoost on `D`** (F1 0.344 vs 0.295 on
   the same split) though it trails on overall accuracy (0.846 vs 0.859).
   Development still focuses on XGBoost per the note above, but if `D`

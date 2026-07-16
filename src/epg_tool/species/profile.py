@@ -54,6 +54,22 @@ class SpeciesProfile:
     # weighting alone under-corrects for that combination). Tuned per
     # species/dataset, not a fixed constant.
     class_weight_multipliers: dict = field(default_factory=dict)
+    # --- sequence post-processing (Viterbi decoding + confidence gate) ---
+    # decode_sequence: run Viterbi over per-window class probabilities using
+    # a transition matrix learned at train time, to enforce the waveform
+    # grammar and smooth spurious single-window flips. allowed_transitions
+    # (label -> permitted successor labels; self-transitions always allowed)
+    # is the *biological* grammar, used only to hard-zero transitions that
+    # are both listed-impossible here AND essentially absent from training
+    # data -- everything else stays data-driven. confidence_threshold: if a
+    # window's top posterior falls below it, the window is relabeled
+    # `unclassified` for the user to review instead of forcing a guess.
+    decode_sequence: bool = False
+    allowed_transitions: dict = field(default_factory=dict)
+    confidence_threshold: float = 0.0
+    unclassified_code: int = 0
+    unclassified_label: str = "unclassified"
+    unclassified_color: str = "#d9d9d9"
 
     def __post_init__(self) -> None:
         codes = [w.code for w in self.waveforms]
@@ -73,6 +89,21 @@ class SpeciesProfile:
 
     def label_for_code(self, code: int) -> str | None:
         return self.code_to_label.get(code)
+
+    def display_label_for_code(self, code: int) -> str:
+        """Like ``label_for_code`` but also resolves the ``unclassified``
+        sentinel and never returns None -- for plotting/tables that may
+        encounter post-processed predictions."""
+        if code == self.unclassified_code:
+            return self.unclassified_label
+        return self.code_to_label.get(code, f"code {code}")
+
+    def display_color_for_code(self, code: int) -> str:
+        """Waveform color for a code, the neutral unclassified color for
+        the sentinel, or a light-grey fallback for anything unknown."""
+        if code == self.unclassified_code:
+            return self.unclassified_color
+        return next((w.color for w in self.waveforms if w.code == code), "#cccccc")
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "SpeciesProfile":
@@ -102,6 +133,12 @@ class SpeciesProfile:
             normalize=raw.get("preprocessing", {}).get("normalize", False),
             window_s=raw.get("preprocessing", {}).get("window_s", 1.0),
             class_weight_multipliers=raw.get("training", {}).get("class_weight_multipliers", {}),
+            decode_sequence=raw.get("sequence", {}).get("decode", False),
+            allowed_transitions=raw.get("sequence", {}).get("allowed_transitions", {}),
+            confidence_threshold=raw.get("sequence", {}).get("confidence_threshold", 0.0),
+            unclassified_code=raw.get("sequence", {}).get("unclassified", {}).get("code", 0),
+            unclassified_label=raw.get("sequence", {}).get("unclassified", {}).get("label", "unclassified"),
+            unclassified_color=raw.get("sequence", {}).get("unclassified", {}).get("color", "#d9d9d9"),
         )
 
 

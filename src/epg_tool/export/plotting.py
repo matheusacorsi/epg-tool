@@ -3,6 +3,8 @@ color-coded, in the spirit of Stylet+/DiscoEPG review plots."""
 
 from __future__ import annotations
 
+import pandas as pd
+
 from epg_tool.io.session import EPGSession
 from epg_tool.species.profile import SpeciesProfile
 
@@ -41,10 +43,8 @@ def plot_session(
     for seg in session.segments:
         if seg.end_s <= start_s or seg.start_s >= end_s:
             continue
-        label = profile.label_for_code(seg.code) or f"code {seg.code}"
-        color = next(
-            (w.color for w in profile.waveforms if w.code == seg.code), "#cccccc"
-        )
+        label = profile.display_label_for_code(seg.code)
+        color = profile.display_color_for_code(seg.code)
         span_start = max(seg.start_s, start_s)
         span_end = min(seg.end_s, end_s)
         ax.axvspan(span_start, span_end, color=color, alpha=0.25, linewidth=0)
@@ -63,10 +63,12 @@ def plot_session(
     if seen_labels:
         import matplotlib.patches as mpatches
 
+        legend_items = [(w.label, w.color) for w in profile.waveforms]
+        legend_items.append((profile.unclassified_label, profile.unclassified_color))
         handles = [
-            mpatches.Patch(color=w.color, alpha=0.5, label=w.label)
-            for w in profile.waveforms
-            if w.label in seen_labels
+            mpatches.Patch(color=color, alpha=0.5, label=label)
+            for label, color in legend_items
+            if label in seen_labels
         ]
         ax.legend(
             handles=handles,
@@ -100,12 +102,18 @@ def plot_time_distribution_pies(sessions: dict[str, EPGSession], profile: Specie
     from .parameters import nonsequential_parameters
 
     color_by_label = {w.label: w.color for w in profile.waveforms}
-    label_order = [w.label for w in profile.waveforms]
+    color_by_label[profile.unclassified_label] = profile.unclassified_color
+    # unclassified last so a review-gated slice reads as an aside, not a waveform
+    label_order = [w.label for w in profile.waveforms] + [profile.unclassified_label]
 
     durations_by_title = {}
     labels_present_anywhere: set[str] = set()
     for title, session in sessions.items():
         nonseq = nonsequential_parameters(session, profile).set_index("label")["total_duration_s"]
+        unclassified_s = sum(
+            seg.duration_s for seg in session.segments if seg.code == profile.unclassified_code
+        )
+        nonseq = pd.concat([nonseq, pd.Series({profile.unclassified_label: unclassified_s})])
         durations_by_title[title] = nonseq
         labels_present_anywhere |= set(nonseq.index[nonseq > 0])
     ordered_labels = [label for label in label_order if label in labels_present_anywhere]
