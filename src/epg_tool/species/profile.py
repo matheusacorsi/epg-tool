@@ -35,6 +35,19 @@ class SpeciesProfile:
     model_registry: dict = field(default_factory=dict)
     parameters: dict = field(default_factory=dict)
     trim_start_s: float = 0.0
+    # Per-recording min-max normalization to [0,1] before feature
+    # extraction (DiscoEPG / Dinh et al. 2026, Eq. 1). Removes per-insect
+    # acquisition-gain differences so amplitude/shape features generalize
+    # across individuals; only affects the ML feature path, never the
+    # rule-based classifier (which reasons in absolute volts).
+    normalize: bool = False
+    # Fixed analysis-window length (seconds) for feature extraction. The
+    # trained model is tied to this value, so training and inference must
+    # use the same one -- hence it lives in the profile, not just a CLI
+    # default. A longer window buys frequency resolution (helps separate
+    # low-frequency waveforms like D from higher ones) at the cost of time
+    # resolution near transitions.
+    window_s: float = 1.0
     # Extra per-label multiplier on top of inverse-frequency ("balanced")
     # sample weights during training -- for waveforms that are both rare
     # and easily confused with a much more common one (plain balanced
@@ -86,6 +99,8 @@ class SpeciesProfile:
             model_registry=raw.get("model_registry", {}),
             parameters=raw.get("parameters", {}),
             trim_start_s=raw.get("preprocessing", {}).get("trim_start_s", 0.0),
+            normalize=raw.get("preprocessing", {}).get("normalize", False),
+            window_s=raw.get("preprocessing", {}).get("window_s", 1.0),
             class_weight_multipliers=raw.get("training", {}).get("class_weight_multipliers", {}),
         )
 

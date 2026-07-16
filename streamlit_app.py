@@ -40,7 +40,13 @@ from epg_tool.export.plotting import plot_session, plot_time_distribution_pies
 from epg_tool.features import extract_features, make_inference_windows, make_windows
 from epg_tool.features.baseline import estimate_np_baseline
 from epg_tool.features.windowing import build_sample_labels
-from epg_tool.io.session import EPGSession, build_session_from_bytes, trim_session_start
+from epg_tool.io.session import (
+    EPGSession,
+    build_session_from_bytes,
+    normalize_samples,
+    normalize_session,
+    trim_session_start,
+)
 from epg_tool.models.registry import has_trained_model, load_model
 from epg_tool.models.rules import RuleBasedClassifier
 from epg_tool.models.tabular import TabularModel
@@ -87,7 +93,13 @@ with st.sidebar:
             )
             model_type = "rule_based"
 
-    window_s = st.number_input("Window size (s)", min_value=0.1, value=1.0, step=0.5)
+    # Default to the profile's window length -- the bundled model was
+    # trained at that size, so changing it here degrades accuracy unless
+    # you also retrain. Exposed for experimentation / custom models.
+    window_s = st.number_input(
+        "Window size (s)", min_value=0.1, value=float(profile.window_s), step=0.5,
+        help="Must match the trained model's window size (the profile default) for bundled models.",
+    )
     trim_start_s = st.number_input(
         "Exclude first N seconds from results (noisy acquisition warm-up)",
         min_value=0.0,
@@ -151,11 +163,21 @@ if st.button("Run classification", type="primary"):
         )
     else:
         np_mask = np.zeros(len(session.samples), dtype=bool)
-    context = {"np_baseline_v": estimate_np_baseline(session.samples, np_mask)}
+    # ML models are trained on the (optionally) per-recording normalized
+    # trace; the rule-based classifier reasons in absolute volts. Segment
+    # timing (`windows`) always comes from the raw trace so the exported
+    # .ANA stays aligned to the original recording.
+    feature_samples = session.samples
+    if profile.normalize and model_type != "rule_based":
+        feature_samples = normalize_samples(session.samples)
+    context = {"np_baseline_v": estimate_np_baseline(feature_samples, np_mask)}
 
     windows = make_inference_windows(session.samples, session.sample_rate_hz, window_s=window_s)
+    feature_windows = make_inference_windows(feature_samples, session.sample_rate_hz, window_s=window_s)
     with st.spinner(f"Extracting features for {len(windows)} windows..."):
-        X = pd.DataFrame([extract_features(w.samples, session.sample_rate_hz, context=context) for w in windows])
+        X = pd.DataFrame(
+            [extract_features(w.samples, session.sample_rate_hz, context=context) for w in feature_windows]
+        )
 
     clf = get_classifier(model_type, uploaded_model, profile)
     pred_codes = clf.predict(X)
@@ -239,10 +261,15 @@ if has_ground_truth:
         if np_code_display is not None
         else np.zeros(len(session_display.samples), dtype=bool)
     )
-    gt_context = {"np_baseline_v": estimate_np_baseline(session_display.samples, np_mask_display)}
-    gt_windows = make_windows(session_display, window_s=window_s)
+    gt_feature_session = (
+        normalize_session(session_display)
+        if profile.normalize and model_type != "rule_based"
+        else session_display
+    )
+    gt_context = {"np_baseline_v": estimate_np_baseline(gt_feature_session.samples, np_mask_display)}
+    gt_windows = make_windows(gt_feature_session, window_s=window_s)
     gt_X = pd.DataFrame(
-        [extract_features(w.samples, session_display.sample_rate_hz, context=gt_context) for w in gt_windows]
+        [extract_features(w.samples, gt_feature_session.sample_rate_hz, context=gt_context) for w in gt_windows]
     )
     clf = get_classifier(model_type, uploaded_model, profile)
     gt_pred = clf.predict(gt_X)

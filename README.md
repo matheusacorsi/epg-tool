@@ -108,6 +108,16 @@ evaluation. Override per-run with `--trim-start-s`. This never affects
 `predict`'s exported `.ANA` file, which always stays full-length and
 time-aligned with the original recording.
 
+**Per-recording normalization and window size** are also profile
+settings (`preprocessing.normalize`, `preprocessing.window_s`), so
+training and inference always use the same values — a model is only
+valid for the window size and normalization it was trained under.
+`normalize: true` applies per-recording amplitude normalization before
+ML feature extraction (see the D-tuning note under "Known limitations").
+Both are read from the profile by `train`, `evaluate`, `predict`, and the
+Streamlit app; override the window size per-run with `--window-s`. The
+rule-based classifier is never normalized (it reasons in absolute volts).
+
 ## Streamlit app
 
 ```bash
@@ -152,38 +162,58 @@ request/response UI.
 
 ## Known limitations / next steps
 
-- **Development is focused on XGBoost going forward.** It's outperformed
-  Random Forest on every held-out comparison so far (~82-84% vs ~81%
-  accuracy). RF's code/model stay in place and usable, but new tuning
-  work targets XGBoost specifically.
+- **Development is focused on XGBoost going forward.** It leads Random
+  Forest on overall held-out accuracy (~86% vs ~85% under the current
+  normalized/4s config). RF's code/model stay in place, usable, and
+  retrained under the same config (and it happens to do better on `D` —
+  see below), but new tuning work targets XGBoost specifically.
 - **`D` waveform is hard to detect, and this has been actively tuned,
   not just documented.** `D` is short-duration (mean ~46s per Bonani
   et al.), rare (~4.5% of windows), and easily confused with the far
-  more common `E2` in the current feature space. Reviewing the DiscoEPG
-  paper (Dinh et al. 2026, `papers/main.pdf` -- a Python package for
-  automatic aphid EPG annotation) surfaced one directly-applicable fix:
-  they hit the same problem with their own rare/short waveform (`pd`,
-  potential drops) and corrected for it with oversampling. The species
-  profile now supports `training.class_weight_multipliers`
-  (`diaphorina_citri.yaml`), an extra per-label weight on top of
-  balanced (inverse-frequency) sample weights, applied automatically
-  by `epg-tool train --model xgboost`. Tuned on the 20-insect
-  calibration/validation split: `D`'s held-out F1 went
-  0.168 (no weighting) → 0.203 (balanced only) → **0.234** (balanced,
-  D×3) -- a ~39% relative improvement, mostly via recall (0.111 → 0.251),
-  at a precision cost and ~1.6 points of overall accuracy (0.838 →
-  0.822). Two things DiscoEPG's own paper does that this project
-  doesn't yet, worth trying next if `D` still isn't good enough:
-  per-recording amplitude normalization (their pipeline min-max
-  normalizes each recording to [0,1] before feature extraction, which
-  may help cross-insect generalization more than it helped `D`
-  specifically) and further hyperparameter search around their reported
-  XGBoost config (100 trees, learning_rate=0.3, depth=6, vs. this
-  project's 300/0.1/6). Explicitly *not* worth pursuing further, already
-  tested and ruled out: shorter windows (tried 0.5s vs. the default 1.0s
-  -- no improvement, since `D`'s ~46s-90s typical duration is already
-  much longer than either window size, unlike DiscoEPG's own 10.24s
-  windows where fixed-endpoint dilution is a bigger factor).
+  more common `E2`. Reviewing the DiscoEPG paper (Dinh et al. 2026,
+  `papers/main.pdf` -- a Python package for automatic aphid EPG
+  annotation) surfaced three applicable methodology changes, each
+  ablated on the 20-insect group split. The combined effect took
+  held-out accuracy **0.821 → 0.859** and `D`'s F1 **0.228 → 0.295**
+  (+29% relative), while improving every other class too:
+    - **Per-recording amplitude normalization** (their Eq. 1,
+      `preprocessing.normalize`). Their pipeline min-max normalizes each
+      recording to [0,1]; done naively that was *destructive* here
+      (accuracy collapsed to 0.675 as one voltage transient compressed
+      the whole trace), so `normalize_session` scales by the robust
+      0.5–99.5 percentile span instead. That version was a clean win on
+      its own (0.821 → 0.837), removing cross-insect gain differences.
+    - **Longer analysis window** (`preprocessing.window_s`, now 4s).
+      Sweeping 1–5s, accuracy and `D`-F1 both peaked at 4s before
+      declining at 5s — the extra frequency resolution helps separate
+      low-frequency `D` (1–3.5 Hz) from the higher-frequency waveforms
+      it was confused with. (This *reverses* an earlier finding: shorter
+      windows were ruled out, but longer ones, once normalization was in
+      place, were the single biggest lever.)
+    - **Per-label oversampling weight** for `D`
+      (`training.class_weight_multipliers`, the same idea as DiscoEPG's
+      oversampling of their rare `pd` waveform), re-swept jointly with
+      the above and settled at `D×2`.
+  Two DiscoEPG ideas were tried and *dropped*: feeding richer wavelet
+  coefficients as features (their best XGBoost input for aphids) slightly
+  *hurt* here, and raw min/max normalization (see above). One idea was
+  evaluated and deferred: **neighbor-context features** (giving each
+  window summary features of its neighbors, motivated by `D` always
+  sitting between `C` and `E1`) raised overall accuracy further
+  (0.859 → 0.869) and helped `G`/`E1`, but did *not* help `D`
+  specifically and needs care to keep train/inference window semantics
+  identical — a good next step, but not shipped in this iteration.
+  Note that window size and the `D` multiplier were selected on the same
+  held-out split they're reported on, so those specific figures are
+  mildly optimistic; the *direction* of each change is consistent across
+  the whole sweep, and the held-out recordings that were never used in
+  training (see below) are the cleaner test.
+- **Random Forest actually edges XGBoost on `D`** (F1 0.344 vs 0.295 on
+  the same split) though it trails on overall accuracy (0.846 vs 0.859).
+  Development still focuses on XGBoost per the note above, but if `D`
+  recall is the priority for a given analysis, RF is worth a look — both
+  bundled models are retrained under the identical normalization/window
+  config so they're directly comparable.
 - **Per-insect variability is real and large.** Individual held-out
   insects can score well below the aggregate validation accuracy (the
   paper itself notes highly variable probing behavior between

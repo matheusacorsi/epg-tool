@@ -17,7 +17,7 @@ from epg_tool.features import extract_features, make_windows
 from epg_tool.features.baseline import estimate_np_baseline
 from epg_tool.features.windowing import build_sample_labels
 from epg_tool.io.d0x import is_d0x_filename
-from epg_tool.io.session import build_session, trim_session_start
+from epg_tool.io.session import build_session, normalize_session, trim_session_start
 from epg_tool.species.profile import SpeciesProfile
 
 
@@ -77,6 +77,8 @@ def build_features_for_session(
     trim_start_s: float | None = None,
 ) -> tuple[pd.DataFrame, np.ndarray]:
     session = trim_session_start(session, profile.trim_start_s if trim_start_s is None else trim_start_s)
+    if profile.normalize:
+        session = normalize_session(session)
 
     np_code = profile.label_to_code.get("Np")
     if np_code is not None:

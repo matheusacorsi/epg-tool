@@ -78,6 +78,25 @@ def test_build_features_explicit_trim_overrides_profile_default():
     assert set(y) == {1, 2}
 
 
+def test_build_features_applies_profile_normalization():
+    session = _toy_session_10s()  # samples arange(100) -> amp_max scales with the range
+    raw = SpeciesProfile(
+        name="n", common_name="n", reference="",
+        waveforms=[WaveformDef(code=1, label="Np"), WaveformDef(code=2, label="C")],
+        sentinel_codes=frozenset({99}), normalize=False,
+    )
+    norm = SpeciesProfile(
+        name="n", common_name="n", reference="",
+        waveforms=[WaveformDef(code=1, label="Np"), WaveformDef(code=2, label="C")],
+        sentinel_codes=frozenset({99}), normalize=True,
+    )
+    X_raw, _ = build_features_for_session(session, raw, window_s=1.0, trim_start_s=0.0)
+    X_norm, _ = build_features_for_session(session, norm, window_s=1.0, trim_start_s=0.0)
+    # Normalized amplitude is squeezed toward [0,1]; raw runs over the full arange span.
+    assert X_norm["amp_max"].max() <= 1.5
+    assert X_raw["amp_max"].max() > 5
+
+
 def _profile_with_weight_multipliers(multipliers: dict) -> SpeciesProfile:
     return SpeciesProfile(
         name="weight_test",

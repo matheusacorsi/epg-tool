@@ -21,20 +21,38 @@ sentinel_codes: [99]
 # The first ~10 min of acquisition on this rig is consistently noisy
 # (settling artifact) and is excluded from training/evaluation/display
 # by default; always falls within D01 given the 100 Hz sampling rate.
+#
+# normalize: per-recording amplitude normalization before ML feature
+# extraction (DiscoEPG / Dinh et al. 2026, Eq. 1), scaled by the robust
+# 0.5-99.5 percentile span rather than raw min/max so occasional
+# transients don't compress the trace (see io/session.normalize_session).
+# Removes cross-insect acquisition-gain differences: on the 20-insect
+# split this raised held-out accuracy 0.821 -> 0.837 and D-waveform F1
+# 0.228 -> 0.250. Only affects the ML path; the rule-based classifier
+# still reasons in absolute volts.
 preprocessing:
   trim_start_s: 600
+  normalize: true
+  # 4s analysis window. Sweeping 1-5s (with normalization) on the 20-insect
+  # split, held-out accuracy and D-waveform F1 both peaked at 4s (acc 0.86,
+  # D-F1 0.30) before declining at 5s; the extra frequency resolution of a
+  # longer window helps separate low-frequency D (1-3.5 Hz) from the
+  # higher-frequency waveforms it was being confused with. Training and
+  # inference read this value from the profile so they stay in lockstep.
+  window_s: 4.0
 
 # D is both rare (~4.5% of windows) and easily confused with the far
 # more common E2 in the XGBoost feature space; plain "balanced"
 # (inverse-frequency) sample weighting under-corrects for that specific
-# combination. Tuned on the 20-insect calibration/validation split (see
-# experiment_d_boost in project history): D's held-out F1 rose from
-# 0.168 (no weighting) to 0.203 (balanced only) to 0.234 (balanced x3
-# for D) with overall accuracy only dropping ~1.6 points (0.838->0.822).
+# combination, so D gets an extra weight multiplier on top. Re-swept
+# jointly with window size and normalization on the 20-insect split:
+# with per-recording normalization and a 4s window, D x2 was the sweet
+# spot (D-F1 ~0.30 vs ~0.26 unweighted, at a negligible overall-accuracy
+# cost). Larger multipliers traded accuracy for no further D gain.
 # Re-tune if the training set changes meaningfully.
 training:
   class_weight_multipliers:
-    D: 3.0
+    D: 2.0
 
 waveforms:
   - code: 1

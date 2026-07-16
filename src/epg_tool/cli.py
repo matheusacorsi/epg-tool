@@ -80,7 +80,7 @@ def train(
     data_root: Path = typer.Argument(..., help="Folder to recursively search for .D0x/.ANA pairs"),
     species: str = typer.Option("diaphorina_citri"),
     model: str = typer.Option("random_forest", help="random_forest or xgboost"),
-    window_s: float = typer.Option(1.0),
+    window_s: Optional[float] = typer.Option(None, help="Window length (s); defaults to the species profile's setting"),
     step_s: Optional[float] = typer.Option(None),
     min_purity: float = typer.Option(0.5, help="Drop windows where the majority label covers less than this"),
     test_size: float = typer.Option(0.2, help="Held-out validation fraction (by insect)"),
@@ -111,10 +111,12 @@ def train(
         raise typer.BadParameter(f"No .D0x/.ANA pairs found under {data_root}")
     typer.echo(f"Found {len(recordings)} recording(s): {[r.insect_id for r in recordings]}")
 
+    effective_window = profile.window_s if window_s is None else window_s
     effective_trim = profile.trim_start_s if trim_start_s is None else trim_start_s
+    typer.echo(f"Window {effective_window:.2f}s, normalize={profile.normalize}")
     typer.echo(f"Trimming first {effective_trim:.0f}s of each recording before windowing")
     X, y, groups = build_dataset(
-        recordings, profile, window_s=window_s, step_s=step_s, min_purity=min_purity, trim_start_s=trim_start_s
+        recordings, profile, window_s=effective_window, step_s=step_s, min_purity=min_purity, trim_start_s=trim_start_s
     )
     typer.echo(f"Built {len(X)} windows across {len(set(groups))} insect(s)")
 
@@ -163,7 +165,7 @@ def evaluate(
     data_root: Path = typer.Argument(..., help="Folder to recursively search for .D0x/.ANA pairs"),
     species: str = typer.Option("diaphorina_citri"),
     model: str = typer.Option("random_forest"),
-    window_s: float = typer.Option(1.0),
+    window_s: Optional[float] = typer.Option(None, help="Window length (s); defaults to the species profile's setting"),
     step_s: Optional[float] = typer.Option(None),
     min_purity: float = typer.Option(0.5),
     trim_start_s: Optional[float] = typer.Option(
@@ -178,9 +180,10 @@ def evaluate(
     from epg_tool.training.evaluate import evaluate as evaluate_predictions
 
     profile = _load_species(species)
+    effective_window = profile.window_s if window_s is None else window_s
     recordings = discover_recordings(data_root)
     X, y, groups = build_dataset(
-        recordings, profile, window_s=window_s, step_s=step_s, min_purity=min_purity, trim_start_s=trim_start_s
+        recordings, profile, window_s=effective_window, step_s=step_s, min_purity=min_purity, trim_start_s=trim_start_s
     )
 
     clf = RuleBasedClassifier(profile) if model == "rule_based" else load_model(profile, model)
@@ -198,7 +201,7 @@ def predict(
     d0x: Path = typer.Argument(..., help="Any .D0x file in the recording's series (no .ANA needed)"),
     species: str = typer.Option("diaphorina_citri"),
     model: str = typer.Option("random_forest", help="random_forest, xgboost, or rule_based"),
-    window_s: float = typer.Option(1.0),
+    window_s: Optional[float] = typer.Option(None, help="Window length (s); defaults to the species profile's setting"),
     step_s: Optional[float] = typer.Option(None),
     out: Path = typer.Option(Path("predicted_.ANA")),
 ):
@@ -212,6 +215,7 @@ def predict(
     from epg_tool.models.rules import RuleBasedClassifier
 
     profile = _load_species(species)
+    window_s = profile.window_s if window_s is None else window_s
     samples, sample_rate_hz, source_files = load_d0x_session(d0x)
     session = EPGSession(
         insect_id=d0x.stem,
@@ -223,8 +227,19 @@ def predict(
     )
 
     windows = make_inference_windows(samples, sample_rate_hz, window_s=window_s, step_s=step_s)
-    context = {"np_baseline_v": estimate_np_baseline(samples, np.zeros(len(samples), dtype=bool))}
-    X = pd.DataFrame([extract_features(w.samples, sample_rate_hz, context=context) for w in windows])
+
+    # Feature windows are cut from the (optionally) normalized trace for ML
+    # models -- matching training -- but the exported .ANA stays aligned to
+    # the original full-length recording. The rule-based classifier reasons
+    # in absolute volts, so it always sees the raw trace.
+    feature_samples = samples
+    if model != "rule_based" and profile.normalize:
+        from epg_tool.io.session import normalize_samples
+
+        feature_samples = normalize_samples(samples)
+    feature_windows = make_inference_windows(feature_samples, sample_rate_hz, window_s=window_s, step_s=step_s)
+    context = {"np_baseline_v": estimate_np_baseline(feature_samples, np.zeros(len(feature_samples), dtype=bool))}
+    X = pd.DataFrame([extract_features(w.samples, sample_rate_hz, context=context) for w in feature_windows])
 
     clf = RuleBasedClassifier(profile) if model == "rule_based" else load_model(profile, model)
     pred_codes = clf.predict(X)
