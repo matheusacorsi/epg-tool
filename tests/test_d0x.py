@@ -37,9 +37,32 @@ def test_body_not_multiple_of_4_raises(tmp_path):
         parse_d0x_file(path)
 
 
-def test_missing_terminator_raises():
-    with pytest.raises(ValueError, match="terminator"):
+def test_parse_header_with_alternate_status_word():
+    """Real recordings have been seen with 'todos' instead of 'ok' before the
+    blank-line terminator (different acquisition software build/locale) --
+    the header fields must still parse identically either way."""
+    data = make_d0x_bytes(
+        samples=[0.0],
+        recorded_at="13-10-2025 10:16:30",
+        rec_time_hours="8,10",
+        sample_rate_hz="100,000",
+        status_word="todos",
+    )
+    header = parse_d0x_header(data)
+    assert header.recorded_at.isoformat() == "2025-10-13T10:16:30"
+    assert header.sample_rate_hz == pytest.approx(100.0)
+
+
+def test_unrecognized_header_raises():
+    with pytest.raises(ValueError, match="Unrecognized"):
         parse_d0x_header(b"not a real header")
+
+
+def test_missing_terminator_raises():
+    # Header fields present, but no blank line follows them anywhere in the file.
+    data = b"EPG: 13-10-2025 10:16:30/rec.time= 8,10/smpl.frq= 100,000Hz\r\nok\r\n"
+    with pytest.raises(ValueError, match="terminator"):
+        parse_d0x_header(data)
 
 
 def test_sort_key_extracts_numeric_suffix(tmp_path):

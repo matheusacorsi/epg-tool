@@ -21,10 +21,14 @@ def make_d0x_bytes(
     recorded_at: str = "13-10-2025 10:16:30",
     rec_time_hours: str = "1,00",
     sample_rate_hz: str = "100,000",
+    status_word: str = "ok",
 ) -> bytes:
-    """Build a synthetic .D0x file body matching the verified Stylet+ layout."""
+    """Build a synthetic .D0x file body matching the verified Stylet+ layout.
+    ``status_word`` defaults to "ok" but real recordings have also been seen
+    with other words (e.g. "todos") right before the blank-line terminator --
+    see test_parse_header_with_alternate_status_word."""
     date, time = recorded_at.split(" ")
-    header = f"EPG: {date} {time}/rec.time= {rec_time_hours}/smpl.frq= {sample_rate_hz}Hz\r\nok\r\n\r\n"
+    header = f"EPG: {date} {time}/rec.time= {rec_time_hours}/smpl.frq= {sample_rate_hz}Hz\r\n{status_word}\r\n\r\n"
     body = struct.pack(f"<{len(samples)}f", *samples)
     return header.encode("ascii") + body
 

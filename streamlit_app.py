@@ -154,12 +154,16 @@ if not d0x_uploads:
 default_insect_id = d0x_uploads[0].name.split(".")[0]
 insect_id = st.text_input("Insect / recording ID", value=default_insect_id)
 
-session = build_session_from_bytes(
-    d0x_files=[(f.name, f.getvalue()) for f in d0x_uploads],
-    ana_bytes=ana_upload.getvalue() if ana_upload else None,
-    insect_id=insect_id,
-    sentinel_codes=profile.sentinel_codes,
-)
+try:
+    session = build_session_from_bytes(
+        d0x_files=[(f.name, f.getvalue()) for f in d0x_uploads],
+        ana_bytes=ana_upload.getvalue() if ana_upload else None,
+        insect_id=insect_id,
+        sentinel_codes=profile.sentinel_codes,
+    )
+except ValueError as exc:
+    st.error(f"Couldn't read the uploaded recording: {exc}")
+    st.stop()
 has_ground_truth = len(session.segments) > 0
 st.success(
     f"Loaded {len(d0x_uploads)} file(s): {session.duration_s:.0f}s at {session.sample_rate_hz:.0f} Hz"

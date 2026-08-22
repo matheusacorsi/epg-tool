@@ -2,7 +2,7 @@
 
 File layout (verified against real Stylet+ output, see project docs):
 
-    <ascii header>ok\r\n\r\n<float32 LE samples ...>
+    <ascii header><status word>\r\n\r\n<float32 LE samples ...>
 
 Header example::
 
@@ -11,8 +11,11 @@ Header example::
 ``rec.time`` is the total session duration in decimal hours and
 ``smpl.frq`` is the sampling rate in Hz; both use a comma as the decimal
 separator. The header length is not fixed-width -- it is located by
-searching for the ``ok\r\n\r\n`` terminator rather than assuming a byte
-offset.
+finding the ``EPG: .../smpl.frq=...Hz`` field, then the next blank line
+(``\r\n\r\n``) after it. The status word right before that blank line
+varies by acquisition software build/locale (seen so far: ``ok``,
+``todos``) and is never relied upon -- only the blank line that follows
+it marks where sample data begins.
 """
 
 from __future__ import annotations
@@ -23,13 +26,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-_HEADER_TERMINATOR = b"ok\r\n\r\n"
-
 _HEADER_RE = re.compile(
-    r"EPG:\s*(?P<date>\d{2}-\d{2}-\d{4})\s+(?P<time>\d{2}:\d{2}:\d{2})"
-    r"/rec\.time=\s*(?P<rec_time>[\d,.]+)"
-    r"/smpl\.frq=\s*(?P<freq>[\d,.]+)Hz",
-    re.ASCII,
+    rb"EPG:\s*(?P<date>\d{2}-\d{2}-\d{4})\s+(?P<time>\d{2}:\d{2}:\d{2})"
+    rb"/rec\.time=\s*(?P<rec_time>[\d,.]+)"
+    rb"/smpl\.frq=\s*(?P<freq>[\d,.]+)Hz",
 )
 
 
@@ -62,23 +62,23 @@ class D0xFile:
 
 
 def parse_d0x_header(data: bytes) -> D0xHeader:
-    term_idx = data.find(_HEADER_TERMINATOR)
-    if term_idx == -1:
-        raise ValueError("Could not locate 'ok\\r\\n\\r\\n' header terminator in .D0x file")
-    header_end = term_idx + len(_HEADER_TERMINATOR)
-
-    header_text = data[:term_idx].decode("ascii", errors="strict")
-    match = _HEADER_RE.search(header_text)
+    match = _HEADER_RE.search(data)
     if match is None:
-        raise ValueError(f"Unrecognized .D0x header format: {header_text!r}")
+        preview = data[:200]
+        raise ValueError(f"Unrecognized .D0x header format: {preview!r}")
+
+    term_idx = data.find(b"\r\n\r\n", match.end())
+    if term_idx == -1:
+        raise ValueError("Could not locate blank-line ('\\r\\n\\r\\n') header terminator in .D0x file")
+    header_end = term_idx + 4
 
     recorded_at = datetime.strptime(
-        f"{match['date']} {match['time']}", "%d-%m-%Y %H:%M:%S"
+        f"{match['date'].decode()} {match['time'].decode()}", "%d-%m-%Y %H:%M:%S"
     )
     return D0xHeader(
         recorded_at=recorded_at,
-        rec_time_hours=_to_float(match["rec_time"]),
-        sample_rate_hz=_to_float(match["freq"]),
+        rec_time_hours=_to_float(match["rec_time"].decode()),
+        sample_rate_hz=_to_float(match["freq"].decode()),
         header_end_offset=header_end,
     )
 
