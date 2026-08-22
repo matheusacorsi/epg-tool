@@ -69,7 +69,7 @@ with st.sidebar:
     st.caption(profile.common_name)
 
     model_options = ["rule_based", "random_forest", "xgboost"]
-    model_type = st.selectbox("Classifier", model_options)
+    model_type = st.selectbox("Classifier", model_options, index=model_options.index("xgboost"))
 
     uploaded_model: TabularModel | None = None
     if model_type != "rule_based":
